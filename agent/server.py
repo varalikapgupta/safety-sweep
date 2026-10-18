@@ -7,7 +7,12 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from bleak import BleakScanner
+import os
+
+if os.getenv("SAFETY_SWEEP_CLOUD", "0") != "1":
+    from bleak import BleakScanner
+else:
+    BleakScanner = None
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
