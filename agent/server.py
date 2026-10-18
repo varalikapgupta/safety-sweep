@@ -281,11 +281,11 @@ async def stalkerware_scan_endpoint(request: AppInventoryRequest):
             status_code=400,
             detail=f"Stalkerware screening failed: {error}",
         ) from error
-
-
+    
+    
 @app.get("/api/scan")
 async def scan():
-        import os
+    import os
 
     if os.getenv("SAFETY_SWEEP_CLOUD", "0") == "1":
         return {
@@ -296,6 +296,8 @@ async def scan():
                 "Run Safety Sweep locally to scan nearby devices."
             ),
         }
+
+
     try:
         results = await BleakScanner.discover(
             timeout=10.0,
