@@ -285,6 +285,17 @@ async def stalkerware_scan_endpoint(request: AppInventoryRequest):
 
 @app.get("/api/scan")
 async def scan():
+        import os
+
+    if os.getenv("SAFETY_SWEEP_CLOUD", "0") == "1":
+        return {
+            "count": 0,
+            "devices": [],
+            "message": (
+                "Bluetooth scanning is unavailable in cloud mode. "
+                "Run Safety Sweep locally to scan nearby devices."
+            ),
+        }
     try:
         results = await BleakScanner.discover(
             timeout=10.0,
