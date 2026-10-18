@@ -1,0 +1,569 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safety Sweep | BLE Monitor</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 28px 16px;
+  background: #0b1220; color: #e5edf8;
+  font-family: Arial, sans-serif;
+}
+main { max-width: 1100px; margin: auto; }
+h1 { margin-bottom: 6px; }
+.muted { color: #9aabc2; line-height: 1.6; overflow-wrap: anywhere; }
+.panel, .stat, .device {
+  background: #151f30; border: 1px solid #29364b; border-radius: 14px;
+}
+.panel { padding: 18px; margin-top: 18px; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px; margin-top: 18px;
+}
+.stat { padding: 16px; min-width: 0; }
+.stat strong { display: block; font-size: 28px; margin-top: 8px; overflow-wrap: anywhere; }
+.stat small { color: #9aabc2; }
+button {
+  border: 0; border-radius: 9px; padding: 12px 16px;
+  margin: 8px 8px 0 0; cursor: pointer; font-weight: bold;
+  background: #78e0c1; color: #0b1220;
+}
+button.secondary { background: #34445c; color: white; }
+button:disabled { opacity: .6; cursor: wait; }
+.device { padding: 16px; margin-top: 12px; overflow-wrap: anywhere; }
+.status { display: inline-block; font-weight: bold; margin: 8px 0; }
+.review { color: #ffd27a; }
+.demo { color: #78e0c1; }
+.normal { color: #b7c8df; }
+.error { color: #ff9999; }
+.history { border-top: 1px solid #34445c; margin-top: 12px; padding-top: 10px; }
+.chart-wrap {
+  margin-top: 14px; padding: 12px; background: #0f1929;
+  border: 1px solid #29364b; border-radius: 10px;
+}
+.chart-wrap canvas { display: block; width: 100%; height: 180px; }
+.notice { border-left: 3px solid #ffd27a; padding-left: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Safety Sweep</h1>
+  <p class="muted">
+    Bluetooth Low Energy monitoring and preliminary screening.
+    An indicator is not proof that a device is tracking you.
+  </p>
+
+  <section class="stats">
+    <div class="stat">
+      <span class="muted">Total scans</span>
+      <strong id="totalScans">—</strong>
+      <small>Saved in local database</small>
+    </div>
+    <div class="stat">
+      <span class="muted">Unique addresses</span>
+      <strong id="uniqueAddresses">—</strong>
+      <small>Addresses observed historically</small>
+    </div>
+    <div class="stat">
+      <span class="muted">Repeated addresses</span>
+      <strong id="repeatedAddresses">—</strong>
+      <small>Seen in at least two scans</small>
+    </div>
+    <div class="stat">
+      <span class="muted">Latest scan</span>
+      <strong id="latestScan" style="font-size:15px">Not scanned yet</strong>
+      <small>Local timestamp</small>
+    </div>
+  </section>
+
+  <section class="stats">
+    <div class="stat">
+      <span class="muted">Devices in latest scan</span>
+      <strong id="deviceCount">—</strong>
+    </div>
+    <div class="stat">
+      <span class="muted">Needs review</span>
+      <strong id="reviewCount">—</strong>
+    </div>
+    <div class="stat">
+      <span class="muted">Demo beacons</span>
+      <strong id="demoCount">—</strong>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Nearby devices</h2>
+    <p id="message" class="muted" aria-live="polite">
+      Ready to scan. Keep TestTag advertising on your iPhone.
+    </p>
+    
+<button id="scanButton" onclick="scanDevices()">Scan nearby devices</button>
+<button class="secondary" onclick="showDemo()">Show demo example</button>
+<button class="secondary" onclick="downloadReport()">Download scan report (CSV)</button>
+
+<button class="secondary" onclick="scanNetwork()">Scan local network</button>
+
+
+    <p id="scanTime" class="muted"></p>
+    <div id="results" aria-live="polite"></div>
+  </section>
+
+  <section class="panel notice">
+    <h3>Safety information</h3>
+    <p class="muted">
+      REVIEW indicates a configured advertisement indicator, not confirmed tracking.
+      Ordinary devices can match these indicators, and trackers can be missed.
+      RSSI is affected by distance, obstacles, and interference. Bluetooth
+      addresses can rotate, so one physical device may appear as multiple addresses.
+    </p>
+  </section>
+</main>
+
+<script>
+const results = document.getElementById("results");
+const message = document.getElementById("message");
+const scanTime = document.getElementById("scanTime");
+const scanButton = document.getElementById("scanButton");
+
+function setSummary(s) {
+  document.getElementById("totalScans").textContent = s.total_scans ?? 0;
+  document.getElementById("uniqueAddresses").textContent = s.unique_addresses ?? 0;
+  document.getElementById("repeatedAddresses").textContent = s.repeated_addresses ?? 0;
+  document.getElementById("latestScan").textContent = s.latest_scan
+    ? new Date(s.latest_scan).toLocaleString()
+    : "Not scanned yet";
+}
+
+async function loadSummary() {
+  try {
+    const response = await fetch("/api/summary");
+    if (response.ok) setSummary(await response.json());
+  } catch (error) {
+    console.error("Could not load summary:", error);
+  }
+}
+
+function addText(parent, tag, text, className = "") {
+  const element = document.createElement(tag);
+  element.textContent = text;
+  if (className) element.className = className;
+  parent.appendChild(element);
+  return element;
+}
+
+function drawSignalChart(canvas, history) {
+  const ctx = canvas.getContext("2d");
+  const width = 700, height = 180;
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+
+  const left = 48, right = width - 16, top = 18, bottom = height - 34;
+  const minRssi = -100, maxRssi = -20;
+
+  ctx.font = "12px Arial";
+  ctx.strokeStyle = "#29364b";
+  ctx.fillStyle = "#9aabc2";
+  ctx.lineWidth = 1;
+
+  for (let value = -100; value <= -20; value += 20) {
+    const y = bottom - ((value - minRssi) / (maxRssi - minRssi)) * (bottom - top);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+    ctx.stroke();
+    ctx.fillText(String(value), 6, y + 4);
+  }
+
+  ctx.fillText("RSSI (dBm)", left, 12);
+
+  const valid = (history || []).filter(item => Number.isFinite(item.rssi));
+  if (!valid.length) {
+    ctx.fillText("No signal readings available yet", left + 8, 85);
+    return;
+  }
+
+  const points = valid.map((item, index) => {
+    const x = valid.length === 1
+      ? (left + right) / 2
+      : left + (index / (valid.length - 1)) * (right - left);
+    const value = Math.max(minRssi, Math.min(maxRssi, item.rssi));
+    const y = bottom - ((value - minRssi) / (maxRssi - minRssi)) * (bottom - top);
+    return { x, y, rssi: item.rssi };
+  });
+
+  ctx.strokeStyle = "#78e0c1";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.stroke();
+
+  points.forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = "#78e0c1";
+    ctx.fill();
+  });
+
+  ctx.fillStyle = "#9aabc2";
+  ctx.fillText(`${valid.length} reading(s) · Latest: ${valid[valid.length - 1].rssi} dBm`, left, height - 8);
+}
+
+function renderDevices(devices) {
+  results.replaceChildren();
+  document.getElementById("deviceCount").textContent = devices.length;
+  document.getElementById("reviewCount").textContent =
+    devices.filter(d => d.status === "REVIEW").length;
+  document.getElementById("demoCount").textContent =
+    devices.filter(d => d.status === "DEMO BEACON").length;
+
+  if (!devices.length) {
+    addText(results, "p", "No BLE advertisements detected in this scan.", "muted");
+    return;
+  }
+
+  for (const d of devices) {
+    const card = document.createElement("article");
+    card.className = "device";
+    addText(card, "h3", d.name || "Unknown device");
+
+    const statusClass = d.status === "REVIEW" ? "status review"
+      : d.status === "DEMO BEACON" ? "status demo" : "status normal";
+    addText(card, "div", d.status, statusClass);
+
+    addText(card, "p",
+      `Signal: ${d.rssi ?? "Unknown"} dBm · Address: ${d.address}`, "muted");
+    addText(card, "p", d.reason || "No details available");
+
+    addText(card, "p",
+      "Services: " + ((d.service_uuids || []).join(", ") || "None reported"),
+      "muted");
+
+    if (d.company_ids?.length) {
+      addText(card, "p", "Company IDs: " + d.company_ids.join(", "), "muted");
+    }
+
+    if (d.manufacturer_data && Object.keys(d.manufacturer_data).length) {
+      const details = document.createElement("details");
+      addText(details, "summary", "Manufacturer data");
+      for (const [company, bytes] of Object.entries(d.manufacturer_data)) {
+        addText(details, "p", `${company}: ${bytes}`, "muted");
+      }
+      card.appendChild(details);
+    }
+
+    const chartWrap = document.createElement("div");
+    chartWrap.className = "chart-wrap";
+    addText(chartWrap, "strong", "Signal history");
+    const canvas = document.createElement("canvas");
+    canvas.setAttribute("aria-label", `RSSI history for ${d.name || d.address}`);
+    chartWrap.appendChild(canvas);
+    card.appendChild(chartWrap);
+    drawSignalChart(canvas, d.signal_history || []);
+
+    const history = document.createElement("div");
+    history.className = "history";
+    addText(history, "p", `Seen in scans: ${d.sightings ?? 1}`);
+    addText(history, "p", `First seen: ${d.first_seen ?? "Current scan"}`, "muted");
+    addText(history, "p", `Last seen: ${d.last_seen ?? "Current scan"}`, "muted");
+    card.appendChild(history);
+    results.appendChild(card);
+  }
+}
+
+async function scanDevices() {
+  scanButton.disabled = true;
+  message.className = "muted";
+  message.textContent = "Scanning for 10 seconds...";
+  scanTime.textContent = "";
+  results.replaceChildren();
+
+  try {
+    const response = await fetch("/api/scan");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Scan failed");
+
+    renderDevices(data.devices || []);
+    setSummary(data.summary || {});
+    message.textContent = data.message || "Scan complete.";
+    scanTime.textContent = "Scan completed: " + data.scan_time;
+  } catch (error) {
+    message.className = "error";
+    message.textContent = "Could not scan: " + error.message;
+  } finally {
+    scanButton.disabled = false;
+  }
+}
+
+function showDemo() {
+  message.className = "muted";
+  message.textContent = "SIMULATED DATA — these are examples, not live detections.";
+  scanTime.textContent = "Demo mode";
+
+  renderDevices([
+    {
+      name: "TestTag", address: "DEMO-ADDRESS-1", rssi: -36,
+      status: "DEMO BEACON",
+      reason: "Controlled test beacon; not a confirmed tracker",
+      service_uuids: ["0000181c-0000-1000-8000-00805f9b34fb"],
+      sightings: 3, first_seen: "Simulated example", last_seen: "Simulated example",
+      signal_history: [
+        { time: "Demo 1", rssi: -52 },
+        { time: "Demo 2", rssi: -44 },
+        { time: "Demo 3", rssi: -36 }
+      ]
+    },
+    {
+      name: "Example BLE device", address: "DEMO-ADDRESS-2", rssi: -70,
+      status: "REVIEW",
+      reason: "Illustrative indicator only; not a real detection",
+      service_uuids: [], sightings: 1,
+      first_seen: "Simulated example", last_seen: "Simulated example",
+      signal_history: [
+        { time: "Demo 1", rssi: -76 },
+        { time: "Demo 2", rssi: -70 }
+      ]
+    }
+  ]);
+}
+
+loadSummary();
+
+async function downloadReport() {
+  try {
+    const response = await fetch("/api/export.csv");
+
+    if (!response.ok) {
+      throw new Error("Could not generate the CSV report.");
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = "safety_sweep_report.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    URL.revokeObjectURL(url);
+    message.textContent = "CSV report downloaded successfully.";
+    message.className = "muted";
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = "error";
+  }
+}
+
+async function scanNetwork() {
+  message.className = "muted";
+  message.textContent = "Checking advertised services and selected local ports...";
+  scanButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/network-scan");
+    const text = await response.text();
+
+    let data;
+    try {
+     data = JSON.parse(text);
+    } catch {
+    throw new Error("API returned HTML instead of JSON. Check the backend URL.");
+    }
+    
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Network scan failed");
+    }
+
+    results.replaceChildren();
+
+    addText(
+      results,
+      "h3",
+      `Network scan: ${data.port_findings_found} host(s) need review`
+    );
+
+    addText(
+      results,
+      "p",
+      `Advertised services: ${data.advertised_services_found}`,
+      "muted"
+    );
+addText(
+    results,
+    "h3",
+    "Camera Risk Screening"
+);
+
+addText(
+    results,
+    "p",
+    `Status: ${data.camera_screening_status ?? "Not available"}`
+);
+
+addText(
+    results,
+    "p",
+    `Possible camera indicators: ${data.possible_camera_indicators ?? 0}`
+);
+
+addText(
+    results,
+    "p",
+    "This screening checks selected network indicators only. No indicators found does not mean a room is camera-free.",
+    "muted"
+);
+    for (const finding of data.port_findings || []) {
+      const card = document.createElement("article");
+      card.className = "device";
+
+      addText(card, "h3", "Network host — REVIEW");
+      addText(
+        card,
+        "p",
+        `IP: ${finding.ip_address}`,
+        "muted"
+      );
+      addText(card, "p", finding.reason);
+
+      for (const port of finding.open_ports || []) {
+        addText(
+          card,
+          "p",
+          `Port ${port.port}: ${port.service} (${port.status})`
+        );
+      }
+
+      results.appendChild(card);
+    }
+
+    if (!data.port_findings?.length && !data.advertised_services?.length) {
+      addText(
+        results,
+        "p",
+        "No matching services or selected open ports were found.",
+        "muted"
+      );
+    }
+
+    addText(results, "p", data.limitations, "muted");
+    message.textContent = "Network scan completed. Findings are indicators only.";
+  } catch (error) {
+    message.className = "error";
+    message.textContent = "Network scan failed: " + error.message;
+  } finally {
+    scanButton.disabled = false;
+  }
+}
+
+async function screenApps() {
+  const message = document.getElementById("app-screening-message");
+  const results = document.getElementById("app-screening-results");
+
+  message.textContent = "Analyzing app inventory...";
+  results.replaceChildren();
+
+  try {
+    const apps = JSON.parse(
+      document.getElementById("app-inventory").value
+    );
+
+    if (!Array.isArray(apps)) {
+      throw new Error("Inventory must be a JSON array.");
+    }
+
+    const response = await fetch("/api/stalkerware-scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apps })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Screening request failed.");
+    }
+
+    const summary = document.createElement("p");
+    summary.textContent =
+      `Apps analyzed: ${data.apps_analyzed} | ` +
+      `Higher review priority: ${data.higher_review_priority} | ` +
+      `Needs review: ${data.needs_review}`;
+    results.appendChild(summary);
+
+    for (const app of data.results) {
+      const card = document.createElement("article");
+      card.className = "device";
+
+      const title = document.createElement("h3");
+      title.textContent = app.app_name;
+      card.appendChild(title);
+
+      const status = document.createElement("p");
+      status.textContent = `Status: ${app.status} | Score: ${app.score}`;
+      card.appendChild(status);
+
+      const reasons = document.createElement("ul");
+      for (const reason of app.reasons) {
+        const item = document.createElement("li");
+        item.textContent = reason;
+        reasons.appendChild(item);
+      }
+      card.appendChild(reasons);
+
+      const disclaimer = document.createElement("p");
+      disclaimer.className = "muted";
+      disclaimer.textContent = app.disclaimer;
+      card.appendChild(disclaimer);
+
+      results.appendChild(card);
+    }
+
+    message.textContent = "Screening completed.";
+  } catch (error) {
+    message.textContent = "Could not analyze inventory: " + error.message;
+  }
+}
+
+</script>
+
+<section class="panel" id="stalkerware-panel">
+  <h2>App Safety Screening</h2>
+  <p class="muted">
+    Review app permissions for combinations that may need attention.
+    Results are indicators, not proof of spyware.
+  </p>
+
+  <label for="app-inventory">App inventory (JSON)</label>
+  <textarea
+    id="app-inventory"
+    rows="10"
+    style="width:100%; margin-top:10px;"
+  >[
+  {
+    "app_name": "Example App",
+    "package_name": "com.example.app",
+    "permissions": [
+      "android.permission.ACCESS_FINE_LOCATION",
+      "android.permission.RECORD_AUDIO",
+      "android.permission.READ_SMS"
+    ]
+  }
+]</textarea>
+
+  <button type="button" onclick="screenApps()">
+    Analyze app inventory
+  </button>
+
+  <p id="app-screening-message" class="muted" aria-live="polite"></p>
+  <div id="app-screening-results"></div>
+</section>
+
+</body>
+</html>
