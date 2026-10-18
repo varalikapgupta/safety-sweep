@@ -290,7 +290,9 @@ async function scanDevices() {
     renderDevices(data.devices || []);
     setSummary(data.summary || {});
     message.textContent = data.message || "Scan complete.";
-    scanTime.textContent = "Scan completed: " + data.scan_time;
+    scanTime.textContent = data.scan_time
+    ? "Scan completed: " + data.scan_time
+    : (data.message || "Scan status updated.");
   } catch (error) {
     message.className = "error";
     message.textContent = "Could not scan: " + error.message;
