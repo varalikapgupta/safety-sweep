@@ -6,3 +6,17 @@ __pycache__/
 !.env.example
 *.db
 ngrok*.exe
+
+# Python virtual environments
+.venv/
+venv/
+env/
+agent/.venv/
+agent/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local database
+agent/safety_sweep.db
